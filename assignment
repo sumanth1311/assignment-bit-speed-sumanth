@@ -1,0 +1,138 @@
+import express from 'express';
+import { PrismaClient } from '@prisma/client';
+
+const app = express();
+const prisma = new PrismaClient();
+app.use(express.json());
+
+app.post('/identify', async (req, res) => {
+  const { email, phoneNumber } = req.body;
+
+  if (!email && !phoneNumber) {
+    return res.status(400).json({ error: 'At least email or phoneNumber is required' });
+  }
+
+  const existingContacts = await prisma.contact.findMany({
+    where: {
+      OR: [
+        { email: email || undefined },
+        { phoneNumber: phoneNumber || undefined }
+      ]
+    },
+    orderBy: { createdAt: 'asc' }
+  });
+
+  let primaryContact = existingContacts.find(c => c.linkPrecedence === 'primary') || existingContacts[0];
+
+  if (!primaryContact) {
+    const newContact = await prisma.contact.create({
+      data: {
+        email,
+        phoneNumber,
+        linkPrecedence: 'primary'
+      }
+    });
+
+    return res.json({
+      contact: {
+        primaryContatctId: newContact.id,
+        emails: [newContact.email].filter(Boolean),
+        phoneNumbers: [newContact.phoneNumber].filter(Boolean),
+        secondaryContactIds: []
+      }
+    });
+  }
+
+  const allRelatedContacts = await prisma.contact.findMany({
+    where: {
+      OR: [
+        { id: primaryContact.id },
+        { linkedId: primaryContact.id }
+      ]
+    },
+    orderBy: { createdAt: 'asc' }
+  });
+
+  const emails = new Set<string>();
+  const phoneNumbers = new Set<string>();
+  const secondaryContactIds: number[] = [];
+
+  allRelatedContacts.forEach(c => {
+    if (c.email) emails.add(c.email);
+    if (c.phoneNumber) phoneNumbers.add(c.phoneNumber);
+    if (c.linkPrecedence === 'secondary') secondaryContactIds.push(c.id);
+  });
+
+  const alreadyExists = allRelatedContacts.some(c =>
+    c.email === email && c.phoneNumber === phoneNumber
+  );
+
+  if (!alreadyExists) {
+    const newSecondary = await prisma.contact.create({
+      data: {
+        email,
+        phoneNumber,
+        linkedId: primaryContact.id,
+        linkPrecedence: 'secondary'
+      }
+    });
+
+    if (newSecondary.email) emails.add(newSecondary.email);
+    if (newSecondary.phoneNumber) phoneNumbers.add(newSecondary.phoneNumber);
+    secondaryContactIds.push(newSecondary.id);
+  }
+
+  return res.json({
+    contact: {
+      primaryContatctId: primaryContact.id,
+      emails: Array.from(emails),
+      phoneNumbers: Array.from(phoneNumbers),
+      secondaryContactIds
+    }
+  });
+});
+
+app.listen(3000, () => {
+  console.log('Server running on http://localhost:3000');
+});
+
+
+
+
+
+
+
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Contact {
+  id             Int      @id @default(autoincrement())
+  phoneNumber    String?
+  email          String?
+  linkedId       Int?
+  linkPrecedence String   // "primary" or "secondary"
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  deletedAt      DateTime?
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
